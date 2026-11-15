@@ -172,13 +172,36 @@ function decide(t) {
   const currentBlock = toFieldBigInt(pickField(t, FIELD_ALIASES.currentBlock), "currentBlock");
   const taskIdRaw = pickField(t, FIELD_ALIASES.taskId);
 
+  // VK-substitution trap (official envelope carries registered_vk + proof_vk
+  // inside input): a proof whose key differs from the registered key must be
+  // REJECTED with reason VK_SUBSTITUTION, never approved.
+  const registeredVk = pickField(t, ["registered_vk", "registeredVk", "registeredVkHash", "registered_vk_hash"]);
+  const proofVk = pickField(t, ["proof_vk", "proofVk", "proofVkHash", "proof_vk_hash"]);
+  const proofTx = pickField(t, ["proof_tx", "proofTx", "proof_tx_hash"]);
+  let vkMismatch = false;
+  if (registeredVk !== undefined && proofVk !== undefined) {
+    vkMismatch = String(registeredVk).trim().toLowerCase() !== String(proofVk).trim().toLowerCase();
+  }
+
   const checks = {
     balanceOk: publicBalance >= minimum,
     amountOk: amount <= maxTransfer,
     recipientOk: recipient === conditionRecipient,
     expiryOk: expiryBlock > currentBlock,
   };
-  const decision = Object.values(checks).every(Boolean) ? 1 : 0;
+  let decision;
+  let reason_code;
+  if (vkMismatch) {
+    decision = 0;
+    reason_code = "VK_SUBSTITUTION";
+  } else {
+    decision = Object.values(checks).every(Boolean) ? 1 : 0;
+    if (decision === 1) reason_code = "OK";
+    else if (!checks.balanceOk) reason_code = "BALANCE_BELOW_MINIMUM";
+    else if (!checks.amountOk) reason_code = "AMOUNT_EXCEEDS_MAX";
+    else if (!checks.recipientOk) reason_code = "RECIPIENT_MISMATCH";
+    else reason_code = "EXPIRED";
+  }
 
   const input = {
     registeredVkHash: VK_HASH_FIELD,
@@ -195,7 +218,7 @@ function decide(t) {
     taskId: taskIdToField(taskIdRaw).toString(),
     salt: randomSalt().toString(),
   };
-  return { decision, checks, input, taskIdRaw: taskIdRaw === undefined ? null : String(taskIdRaw) };
+  return { decision, checks, input, taskIdRaw: taskIdRaw === undefined ? null : String(taskIdRaw), reason_code, vkMismatch, proofTx };
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +328,22 @@ const server = http.createServer(async (req, res) => {
       } catch {
         return sendJson(res, 400, { error: "invalid_json" });
       }
+      // Platform preflight handshake (see /build spec): a signed
+      // { type: "agent-games.preflight.v1", agent_id, issued_at, nonce }
+      // must be answered { ok: true, protocolVersion: "v1" } (signed).
+      // It is NOT a gatekeeper task — never run it through decide().
+      if (body && body.type === "agent-games.preflight.v1") {
+        console.log(`[preflight] ok agent_id=${body.agent_id || "?"} nonce=${body.nonce || "?"}`);
+        return sendJson(res, 200, { ok: true, protocolVersion: "v1" }, true);
+      }
       const task = extractTask(body);
+      // task_id lives at the top level of the official envelope
+      // (agent-games.proof-gatekeeper.v1); carry it into the task so the
+      // proof's taskId signal matches the platform's task id.
+      const topTaskId = pickField(body, FIELD_ALIASES.taskId);
+      if (topTaskId !== undefined && pickField(task, FIELD_ALIASES.taskId) === undefined) {
+        task.task_id = topTaskId;
+      }
       let decided;
       try {
         decided = decide(task);
@@ -313,29 +351,52 @@ const server = http.createServer(async (req, res) => {
         // Malformed task: fail closed, no decision issued.
         return sendJson(res, 400, { error: "invalid_task", detail: String(e.message).slice(0, 200) });
       }
-      console.log(`[task] id=${decided.taskIdRaw} decision=${decided.decision} checks=${JSON.stringify(decided.checks)}`);
-      let proofOut;
+      console.log(`[task] id=${decided.taskIdRaw} decision=${decided.decision} reason=${decided.reason_code} checks=${JSON.stringify(decided.checks)}`);
+      let proofOut = null;
       try {
         proofOut = await generateProof(decided.input);
       } catch (e) {
         // Proof generation failed (incl. circuit refusing a wrong decision,
-        // or timeout): fail closed, no decision returned.
+        // or timeout): fail closed, no decision returned — EXCEPT a
+        // VK-substitution trap, where no valid proof can exist at all:
+        // answer the REJECT with reason code (+ incoming proof_tx), no proof.
         console.log(`[task] proof failed for id=${decided.taskIdRaw}: ${String(e.message).slice(0, 160)}`);
+        if (decided.vkMismatch) {
+          const noProofResp = {
+            agent: AGENT,
+            track: TRACK,
+            circuit: "gatekeeper",
+            circuitVersion: "gatekeeper",
+            taskId: decided.taskIdRaw,
+            decision: "REJECT",
+            reason_code: decided.reason_code,
+            checks: decided.checks,
+            vkHash: VK_HASH_HEX,
+            generatedAt: new Date().toISOString(),
+          };
+          if (decided.proofTx !== undefined) noProofResp.proof_tx = String(decided.proofTx);
+          return sendJson(res, 200, noProofResp, true);
+        }
         return sendJson(res, 503, { error: "proof_failed", detail: "fail closed" });
       }
-      return sendJson(res, 200, {
+      const taskResp = {
         agent: AGENT,
         track: TRACK,
         circuit: "gatekeeper",
         circuitVersion: "gatekeeper",
         taskId: decided.taskIdRaw,
-        decision: decided.decision,
+        // Protocol-v1 schema: decision is the string enum APPROVE|REJECT
+        // (the circuit's numeric 0/1 lives only inside the proof signals).
+        decision: decided.decision === 1 ? "APPROVE" : "REJECT",
+        reason_code: decided.reason_code,
         checks: decided.checks,
         vkHash: VK_HASH_HEX,
         proof: proofOut.proof,
         publicSignals: proofOut.publicSignals,
         generatedAt: new Date().toISOString(),
-      }, true);
+      };
+      if (decided.proofTx !== undefined) taskResp.proof_tx = String(decided.proofTx);
+      return sendJson(res, 200, taskResp, true);
     }
 
     return sendJson(res, 404, { error: "not_found" });

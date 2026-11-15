@@ -12,7 +12,11 @@ set -u
 cd "$(dirname "$0")"
 # Egress proxy vars (needed by the localhost.run SSH tunnel). Cron workers
 # don't inherit them, so load from proxy.env (chmod 600, gitignored).
-if [ -f proxy.env ]; then set -a; . ./proxy.env; set +a; fi
+# NOTE: ambient proxy credentials ROTATE per run — prefer the ambient env
+# and only fall back to proxy.env when ambient is unset, otherwise the
+# stored (stale) credentials break the tunnel (seen 2026-11-15: every
+# restart failed with "Connection closed by UNKNOWN port 65535").
+if [ -z "${https_proxy:-}" ] && [ -f proxy.env ]; then set -a; . ./proxy.env; set +a; fi
 if [ -f .env ]; then set -a; . ./.env; set +a; fi
 PORT="${PORT:-3000}"
 mkdir -p logs

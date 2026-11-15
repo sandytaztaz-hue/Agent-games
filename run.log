@@ -1,0 +1,4 @@
+server started (pid 1899)
+{"status":"ok","agent":"9dasand72","track":"proof-gatekeeper","circuit":"gatekeeper","vkHash":"0x6b79c6012a6d8651f3e13bc4d2a20370280ab49700c90c5316d4168bfbad77b0","hmacConfigured":false}tunnel started (pid 1912)
+PUBLIC ENDPOINT: https://7d16f29739881e.app.lhr.life
+health: https://7d16f29739881e.app.lhr.life/health

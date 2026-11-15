@@ -1,0 +1,29 @@
+PASS  server becomes healthy
+PASS  health reports hmacConfigured=true — {"status":"ok","agent":"9dasand72","track":"proof-gatekeeper","circuit":"gatekeeper","vkHash":"0x6b79c6012a6d8651f3e13bc4d2a20370280ab49700c90c5316d4168bfbad77b0","hmacConfigured":true}
+PASS  valid task -> 200 — status 200
+PASS  decision is 1 (approve) — decision=1
+PASS  response carries proof + publicSignals
+PASS  response is HMAC-signed (header present)
+PASS  response signature verifies — header=8a79ccfb17e35384...
+PASS  returned proof verifies locally
+PASS  wrong HMAC -> 401 — status 401
+PASS  missing HMAC -> 401 — status 401
+PASS  reject task -> 200 — status 200
+PASS  decision is 0 (reject) — decision=0
+PASS  reject proof verifies locally
+PASS  malformed task -> 400 — status 400
+PASS  nested {task:{...}} envelope -> decision 1 — status 200 decision=1
+
+server log:
+[9dasand72] gatekeeper vkHash: 0x6b79c6012a6d8651f3e13bc4d2a20370280ab49700c90c5316d4168bfbad77b0
+[9dasand72] HMAC secret configured: yes
+[9dasand72] proof-gatekeeper agent listening on http://localhost:3000
+[9dasand72] endpoints: GET /health, POST / (task envelope)
+[task] id=test-1 decision=1 checks={"balanceOk":true,"amountOk":true,"recipientOk":true,"expiryOk":true}
+[reject] bad/missing HMAC signature
+[reject] bad/missing HMAC signature
+[task] id=test-2 decision=0 checks={"balanceOk":true,"amountOk":true,"recipientOk":false,"expiryOk":true}
+[task] id=test-1 decision=1 checks={"balanceOk":true,"amountOk":true,"recipientOk":true,"expiryOk":true}
+
+
+RESULT: 15 passed, 0 failed
